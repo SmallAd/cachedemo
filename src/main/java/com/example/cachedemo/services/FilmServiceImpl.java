@@ -11,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 
 @Slf4j
 @Service
@@ -70,8 +71,9 @@ public class FilmServiceImpl implements FilmService {
         if (resultFilm != null) {
             return resultFilm;
         }
-        resultFilm = filmRepository.findById(id).get();
-        if (resultFilm != null) {
+        Optional<Film> filmOptional = filmRepository.findById(id);
+        if (filmOptional.isPresent()) {
+            resultFilm = filmOptional.get();
             filmCache.put(resultFilm.getId(), resultFilm);
         }
         return resultFilm;
