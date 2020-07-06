@@ -7,6 +7,9 @@ import javax.persistence.*;
 @Entity
 @Data
 @EqualsAndHashCode
+@NoArgsConstructor
+@AllArgsConstructor(access = AccessLevel.PRIVATE)
+@Builder
 public class Film {
 
     @Id
@@ -17,5 +20,6 @@ public class Film {
     private Integer year;
     private String genre;
     private Boolean watched;
+
 }
 
