@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <title th:text="${film != null} ? 'Edit' : 'Add Film'"></title>
+</head>
+<body>
+
+<form th:action="${film != null} ? '/edit' : '/add'" method="POST">
+    <input th:if="${film != null}" th:value="${film.id}" type="hidden" name="id">
+    <label for="title">Title</label>
+    <input type="text" name="title" id="title">
+    <label for="year">Year</label>
+    <input type="text" name="year" id="year">
+    <label for="genre">Genre</label>
+    <input type="text" name="genre" id="genre">
+    <label for="watched">Watched</label>
+    <input type="text" name="watched" id="watched">
+    <input type="submit" th:value="${film != null} ? 'Edit film' : 'Add new film'">
+</form>
+</body>
+</html>
