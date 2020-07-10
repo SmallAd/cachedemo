@@ -1,21 +1,11 @@
 package com.example.cachedemo.cache;
 
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashSet;
+import java.util.*;
 
 public class Cache2QImpl<K, V> implements Cache<K, V> {
-
-    final HashMap<K, V> map;
-    /**
-     * Sets for 2Q algorithm
-     */
+    private final HashMap<K, V> map;
     private final LinkedHashSet<K> mapIn, mapOut, mapHot;
 
-    protected float quarter = .25f;
-    /**
-     * Size of this cache in units. Not necessarily the number of elements.
-     */
     private int sizeIn;
     private int sizeOut;
     private int sizeHot;
@@ -35,15 +25,32 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
 
         calcMaxSizes(maxSize);
 
-        map = new HashMap<K, V>(0, 0.75f);
+        map = new HashMap<>(0, 0.75f);
 
-        mapIn = new LinkedHashSet<K>();
-        mapOut = new LinkedHashSet<K>();
-        mapHot = new LinkedHashSet<K>();
+        mapIn = new LinkedHashSet<>();
+        mapOut = new LinkedHashSet<>();
+        mapHot = new LinkedHashSet<>();
     }
 
     /**
-     * Returns the value if it exists.
+     * Sets the size of the cache.
+     */
+    @Override
+    public void resize(int maxSize) {
+
+        calcMaxSizes(maxSize);
+        synchronized (this) {
+            HashMap<K, V> copy = new HashMap<>(map);
+            evictAll();
+            for (K key : copy.keySet()) {
+                put(key, copy.get(key));
+            }
+        }
+    }
+
+    /**
+     * Returns the value if it exists in the cache.
+     * This returns null if a value is not cached.
      */
     @Override
     public V get(K key) {
@@ -63,9 +70,9 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
                 } else {
                     if (mapOut.contains(key)) {
                         mapHot.add(key);
-                        sizeHot++;
+                        sizeHot += safeSizeOf(key, mapValue);
                         trimMapHot();
-                        sizeOut--;
+                        sizeOut -= safeSizeOf(key, mapValue);
                         mapOut.remove(key);
                     }
                 }
@@ -73,13 +80,11 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
             }
             missCount++;
         }
-
         return null;
-
     }
 
     /**
-     * Caches value.
+     *  Cache value
      */
     @Override
     public V put(K key, V value) {
@@ -88,27 +93,41 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
         }
 
         if (map.containsKey(key)) {
-            // if already have - replace it.
+            synchronized (this) {
+                V oldValue = map.get(key);
+                if (mapIn.contains(key)) {
+                    sizeIn -= safeSizeOf(key, oldValue);
+                    sizeIn += safeSizeOf(key, value);
+                }
+                if (mapOut.contains(key)) {
+                    sizeOut -= safeSizeOf(key, oldValue);
+                    sizeOut += safeSizeOf(key, value);
+                }
+                if (mapHot.contains(key)) {
+                    sizeHot -= safeSizeOf(key, oldValue);
+                    sizeHot += safeSizeOf(key, value);
+                }
+            }
             return map.put(key, value);
         }
         V result;
         synchronized (this) {
+            final int sizeOfValue = safeSizeOf(key, value);
             //if there are free page slots then put value into a free page slot
-            boolean hasFreeSlot = add2slot(key);
+            boolean hasFreeSlot = add2slot(key, safeSizeOf(key, value));
             if (hasFreeSlot) {
-                // add 2 free slot & exit
                 map.put(key, value);
                 result = value;
             } else {
                 // no free slot, go to trim mapIn/mapOut
-                if (trimMapIn()) {
-                    //put X into the reclaimed page slot
+                if (trimMapIn(sizeOfValue)) {
                     map.put(key, value);
+                    mapIn.add(key);
                     result = value;
                 } else {
                     map.put(key, value);
                     mapHot.add(key);
-                    sizeHot++;
+                    sizeHot += safeSizeOf(key, value);
                     trimMapHot();
                     result = value;
                 }
@@ -121,7 +140,6 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
     /**
      * Removes the entry if it exists.
      */
-    @Override
     public V remove(K key) {
         if (key == null) {
             throw new NullPointerException("key == null");
@@ -132,42 +150,25 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
             previous = map.remove(key);
             if (previous != null) {
                 if (mapIn.contains(key)) {
-                    sizeIn--;
+                    sizeIn -= safeSizeOf(key, previous);
                     mapIn.remove(key);
                 }
                 if (mapOut.contains(key)) {
-                    sizeOut--;
+                    sizeOut -= safeSizeOf(key, previous);
                     mapOut.remove(key);
                 }
                 if (mapHot.contains(key)) {
-                    sizeHot--;
+                    sizeHot -= safeSizeOf(key, previous);
                     mapHot.remove(key);
                 }
             }
         }
+
         return previous;
     }
 
     /**
-     * Sets the size of the cache.
-     */
-    @Override
-    public void resize(int maxSize) {
-
-        calcMaxSizes(maxSize);
-        synchronized (this) {
-            HashMap<K, V> copy = new HashMap<K, V>(map);
-            evictAll();
-            Iterator<K> it = copy.keySet().iterator();
-            while (it.hasNext()) {
-                K key = it.next();
-                put(key, copy.get(key));
-            }
-        }
-    }
-
-    /**
-     * Clear the cache.
+     * Removes all entries
      */
     @Override
     public synchronized final void evictAll() {
@@ -197,17 +198,16 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
 
     /**
      * Sets sizes:
-     * mapIn  ~ 25% // 1st lvl - store for input keys, FIFO
-     * mapOut ~ 50% // 2nd lvl - store for keys goes from input to output, FIFO
-     * mapHot ~ 25% // hot lvl - store for keys goes from output to hot, LRU
+     * mapIn  ~ 25%
+     * mapOut ~ 50%
+     * mapHot ~ 25%
      */
     private void calcMaxSizes(int maxSize) {
         if (maxSize <= 0) {
             throw new IllegalArgumentException("maxSize <= 0");
         }
         synchronized (this) {
-            //sizes
-            maxSizeIn = (int) (maxSize * quarter);
+            maxSizeIn = (int) (maxSize * .25);
             maxSizeOut = maxSizeIn * 2;
             maxSizeHot = maxSize - maxSizeOut - maxSizeIn;
         }
@@ -216,69 +216,65 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
     /**
      * Remove items by LRU from mapHot
      */
-
     private void trimMapHot() {
         while (true) {
             K key;
-            synchronized (this) {
-                if (sizeHot < 0 || (mapHot.isEmpty() && sizeHot != 0)) {
-                    throw new IllegalStateException(getClass().getName()
-                            + ".sizeOf() is reporting inconsistent results!");
-                }
-
-                if (sizeHot <= maxSizeHot || mapHot.isEmpty()) {
-                    break;
-                }
-                // we add new item before, so next return first (LRU) item
-                key = mapHot.iterator().next();
-                mapHot.remove(key);
-                sizeHot--;
-                map.remove(key);
+            V value;
+            if (sizeHot < 0 || (mapHot.isEmpty() && sizeHot != 0)) {
+                throw new IllegalStateException(getClass().getName()
+                        + ".sizeOf() is reporting inconsistent results!");
             }
+
+            if (sizeHot <= maxSizeHot || mapHot.isEmpty()) {
+                break;
+            }
+            key = mapHot.iterator().next();
+            mapHot.remove(key);
+            value = map.remove(key);
+            sizeHot -= safeSizeOf(key, value);
         }
     }
 
     /**
      * Remove items by FIFO from mapIn & mapOut
      */
-    private boolean trimMapIn() {
+    private boolean trimMapIn(final int sizeOfValue) {
         boolean result = false;
-        if (maxSizeIn < 1) {
+        if (maxSizeIn < sizeOfValue) {
             return result;
         } else {
             while (mapIn.iterator().hasNext()) {
                 K keyIn;
+                V valueIn;
                 if (!mapIn.iterator().hasNext()) {
                     System.out.print("err");
                 }
                 keyIn = mapIn.iterator().next();
-                if (sizeIn  < maxSizeIn || mapIn.isEmpty()) {
-                    //put X into the reclaimed page slot
+                valueIn = map.get(keyIn);
+                if ((sizeIn + sizeOfValue) <= maxSizeIn || mapIn.isEmpty()) {
                     if (keyIn == null) {
                         System.out.print("err");
                     }
-                    mapIn.add(keyIn);
-                    sizeIn++;
+                    sizeIn += sizeOfValue;
                     result = true;
                     break;
                 }
-                //page out the tail of mapIn, call it Y
                 mapIn.remove(keyIn);
-                sizeIn--;
+                final int removedItemSize = safeSizeOf(keyIn, valueIn);
+                sizeIn -= removedItemSize;
 
-                // add identifier of Y to the head of mapOut
                 while (mapOut.iterator().hasNext()) {
                     K keyOut;
-                    if (sizeOut < maxSizeOut || mapOut.isEmpty()) {
-                        // put Y into the reclaimed page slot
+                    V valueOut;
+                    if ((sizeOut + removedItemSize) <= maxSizeOut || mapOut.isEmpty()) {
                         mapOut.add(keyIn);
-                        sizeOut++;
+                        sizeOut += removedItemSize;
                         break;
                     }
-                    //remove identifier of Z from the tail of mapOut
                     keyOut = mapOut.iterator().next();
                     mapOut.remove(keyOut);
-                    sizeOut--;
+                    valueOut = map.remove(keyOut);
+                    sizeOut -= safeSizeOf(keyOut, valueOut);
                 }
             }
         }
@@ -288,24 +284,42 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
     /**
      * Check for free slot in any container and add if exists
      */
-    private boolean add2slot(final K key) {
+    private boolean add2slot(final K key, final int sizeOfValue) {
         boolean hasFreeSlot = false;
-        if (!hasFreeSlot && maxSizeIn >= sizeIn + 1) {
+        if (maxSizeIn >= sizeIn + sizeOfValue) {
             mapIn.add(key);
-            sizeIn++;
+            sizeIn += sizeOfValue;
             hasFreeSlot = true;
         }
-        if (!hasFreeSlot && maxSizeOut >= sizeOut + 1) {
+        if (!hasFreeSlot && maxSizeOut >= sizeOut + sizeOfValue) {
             mapOut.add(key);
-            sizeOut++;
+            sizeOut += sizeOfValue;
             hasFreeSlot = true;
         }
-        if (!hasFreeSlot && maxSizeHot >= sizeHot + 1) {
+        if (!hasFreeSlot && maxSizeHot >= sizeHot + sizeOfValue) {
             mapHot.add(key);
-            sizeHot++;
+            sizeHot += sizeOfValue;
             hasFreeSlot = true;
         }
         return hasFreeSlot;
+    }
+
+
+    private int safeSizeOf(K key, V value) {
+        int result = sizeOf(key, value);
+        if (result < 0) {
+            throw new IllegalStateException("Negative size: " + key + "=" + value);
+        }
+        return result;
+    }
+
+    /**
+     * Returns the size of the entry in user-defined units.  The default
+     * implementation returns 1 so that size is the number of entries and
+     * max size is the maximum number of entries.
+     */
+    protected int sizeOf(K key, V value) {
+            return 1;
     }
 
     public synchronized final int hitCount() {
@@ -318,13 +332,14 @@ public class Cache2QImpl<K, V> implements Cache<K, V> {
 
     @Override
     public synchronized final String toString() {
-        int accesses = hitCount() + missCount();
-        int hitPercent = accesses != 0 ? (100 * hitCount() / accesses) : 0;
+        int accesses = hitCount + missCount;
+        int hitPercent = accesses != 0 ? (100 * hitCount / accesses) : 0;
         return String.format("Cache[size=%d,maxSize=%d,hits=%d,misses=%d,hitRate=%d%%," +
+                "sizeIn=%d,sizeOut=%d,sizeHot=%d," +
                         "]",
-                size(), maxSize(), hitCount(), missCount(), hitPercent)
+                size(), maxSize(), hitCount, missCount, hitPercent, sizeIn, sizeOut, sizeHot)
                 + "\n map:" + map.toString();
     }
-
 }
+
 
